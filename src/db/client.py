@@ -80,3 +80,37 @@ class PostgreSQLClient():
         except Exception as e:
             print(f"exception: {e}")
             return False
+        
+    async def get_username(self, username: str):
+        """
+        Tests connection to db
+
+        Args:
+
+        Returns:
+            - True if username exists, False otherwise
+        """
+        try:
+            result = await self.get_result(self.queries.get_username(username))
+            print(result)
+            return bool(result)
+        except Exception as e:
+            print(f"exception: {e}")
+            return False
+    
+    async def create_new_user(self):
+        """
+        Tests connection to db
+
+        Args:
+
+        Returns:
+            - True if username exists, False otherwise
+        """
+        try:
+            result = await self.get_result(self.queries.get_username())
+            print(result)
+            return bool(result)
+        except Exception as e:
+            print(f"exception: {e}")
+            return False
