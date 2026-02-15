@@ -1,53 +1,55 @@
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.security import OAuth2PasswordBearer
-from db.client import PostgreSQLClient
-from config import PostgreSQLConfig
-from typing import Annotated
+from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-pgcli = PostgreSQLClient(PostgreSQLConfig())
-app = FastAPI(title="Template", version="1.0.0")
+from db.database import check_db_health, get_db
+from db.models import User
 
-class TableResponse(BaseModel):
-    table: str
-    rows: List[Dict[str, Any]]
+app = FastAPI(title="fs-template")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-@app.get("/")
-async def health():
-    return {"status": "Healthy"}
+class UserCreate(BaseModel):
+    username: str
+    email: str
 
-@app.get("/items/")
-async def read_items(token: Annotated[str, Depends(oauth2_scheme)]):
-    return {"token": token}
 
-@app.get("/dbtables/{table_name}", response_model=TableResponse)
-async def return_db_table_contents(table_name: str):
+class UserRead(BaseModel):
+    id: int
+    username: str
+    email: str
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready() -> dict[str, str]:
+    healthy = await check_db_health()
+    if not healthy:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable")
+    return {"status": "ready"}
+
+
+@app.get("/users", response_model=list[UserRead])
+async def list_users(db: AsyncSession = Depends(get_db)) -> list[UserRead]:
+    result = await db.execute(select(User).order_by(User.id.asc()))
+    users = result.scalars().all()
+    return [UserRead(id=u.id, username=u.username, email=u.email) for u in users]
+
+
+@app.post("/users", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def create_user(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> UserRead:
+    user = User(username=payload.username, email=payload.email)
+    db.add(user)
     try:
-        rows = await pgcli.get_table_contents(table_name)
-        formatted_rows = [dict(row._mapping) for row in rows]
-        return {"table": table_name, "rows": formatted_rows}
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or error: {str(e)}")
-    
-@app.put("/register")
-async def register_new_user(username: str, password: str):
-    try:
-        results = await pgcli.get_username()
-        valid_username = username.fetchone()
-        if not valid_username:
-            raise HTTPException(status_code=400, detail=f"Username already exists")
-        return valid_username
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Error in register: {str(e)}")
-    
-@app.put("/login")
-async def register_new_user(username: str, password: str):
-    try:
-        results = await pgcli.get_username()
-        valid_username = username.fetchone()
-        return valid_username
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or error: {str(e)}")
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username or email already exists")
+
+    await db.refresh(user)
+    return UserRead(id=user.id, username=user.username, email=user.email)
